@@ -47,25 +47,35 @@ async function startBot() {
   sock.ev.on('creds.update', saveCreds);
 
   /* ===== CONNECTION ===== */
-  sock.ev.on('connection.update', (update) => {
+sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) qrcode.generate(qr, { small: true });
+    if (qr) {
+        qrcode.generate(qr, { small: true });
+        console.log('QR Code generated – scan it quickly!');
+    }
 
     if (connection === 'close') {
-    const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-    if (shouldReconnect) {
-        console.log('🔁 Reconnecting in 5 seconds...');
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        console.log('Connection closed! Status code:', statusCode);
+
+        if (statusCode === DisconnectReason.loggedOut) {
+            console.log('Logged out – delete auth_info folder and redeploy for new QR');
+            // Render پر logged out پر bot stop ہو جائے گا – QR کے لیے redeploy کرنا پڑے گا
+            return;
+        }
+
+        // Other reasons (network, server) – reconnect try کر لو ایک بار
+        console.log('Reconnecting in 10 seconds...');
         setTimeout(() => {
             startBot();
-        }, 5000); // wait 5 seconds before reconnecting
+        }, 10000); // 10 seconds delay
     }
-}
 
     if (connection === 'open') {
-      console.log('✅ WhatsApp Connected');
+        console.log('✅ WhatsApp Connected Successfully!');
     }
-  });
+});
 
   /* ===== MESSAGES ===== */
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
