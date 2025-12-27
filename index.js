@@ -1,11 +1,11 @@
-/* ================= IMPORTS ================= */
 const express = require('express');
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
     Browsers, 
-    fetchLatestBaileysVersion 
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore 
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -13,17 +13,18 @@ const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 /* ================= CONFIG ================= */
+const app = express();
+const PORT = process.env.PORT || 3000;
 const GEMINI_COOLDOWN_MS = 5000;
 let lastGeminiCall = 0;
-const FOLDER_ID = '1akYbGT5KZYe25hqTmy6nay1x77iozXZR';
 
-/* ================= KEEP-ALIVE SERVER ================= */
-const app = express();
-app.get('/', (req, res) => res.send('Bot is running! ✅'));
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 Web Server active on port ${PORT}`));
+app.get('/', (req, res) => res.send('Bot Status: Active ✅'));
+app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
 
-/* ================= GOOGLE DRIVE SETUP ================= */
+/* ================= SETUP ================= */
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
 let drive;
 try {
     const driveAuth = new google.auth.GoogleAuth({
@@ -31,118 +32,88 @@ try {
         scopes: ['https://www.googleapis.com/auth/drive.readonly']
     });
     drive = google.drive({ version: 'v3', auth: driveAuth });
-} catch (e) {
-    console.error("❌ Google Drive Key Error: Check your Secrets!");
-}
+} catch (e) { console.error("Check GOOGLE_DRIVE_KEY in Secrets"); }
 
-/* ================= GEMINI AI SETUP ================= */
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
-/* ================= START BOT ================= */
+/* ================= BOT LOGIC ================= */
 async function startBot() {
-    // 1. Setup Auth
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
-    // 2. Get Latest WA Version (Fixes 405 error)
+    // Fetch latest WA version to prevent 405 error
     const { version } = await fetchLatestBaileysVersion();
-    console.log(`📡 Connecting with WhatsApp v${version.join('.')}`);
+    console.log(`📡 Using WhatsApp Version: ${version.join('.')}`);
 
-    // 3. Create Connection
     const sock = makeWASocket({
         version,
-        auth: state,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+        },
+        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'), // Using Desktop identification
-        syncFullHistory: false
+        browser: Browsers.macOS('Desktop'),
+        generateHighQualityLinkPreview: true,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    /* ===== CONNECTION UPDATES ===== */
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
             console.clear();
-            console.log('--------------------------------------------');
-            console.log('📸 SCAN THE QR CODE BELOW WITH WHATSAPP:');
-            console.log('--------------------------------------------');
+            console.log('✨ NEW QR CODE GENERATED:');
             qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(`❌ Connection Closed. Status: ${statusCode}`);
-            
-            if (statusCode !== DisconnectReason.loggedOut) {
-                console.log('🔁 Attempting to reconnect...');
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ Connection Closed: ${code}`);
+            if (code !== DisconnectReason.loggedOut) {
                 setTimeout(() => startBot(), 5000);
-            } else {
-                console.log('🚫 Logged out. Delete "auth_info" and scan again.');
             }
         }
 
-        if (connection === 'open') {
-            console.log('✅ SUCCESS: WhatsApp is now connected!');
-        }
+        if (connection === 'open') console.log('✅ Connected Successfully!');
     });
 
-    /* ===== MESSAGE HANDLING ===== */
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         const msg = messages[0];
-        if (!msg || msg.key.fromMe || !msg.message) return;
+        if (!msg.message || msg.key.fromMe) return;
 
-        const sender = msg.key.remoteJid;
-        const text = msg.message?.conversation || 
-                     msg.message?.extendedTextMessage?.text || 
-                     msg.message?.imageMessage?.caption || '';
-        const lower = text.toLowerCase().trim();
-
+        const jid = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        
         try {
-            // --- REPORT LOGIC ---
-            if (lower.startsWith('report')) {
-                const match = lower.match(/report\s+(\d+)/);
-                if (!match) {
-                    return await sock.sendMessage(sender, { text: '📄 استعمال کریں: report 23122025' });
-                }
+            // Report logic (Example: report 20251227)
+            if (text.toLowerCase().startsWith('report')) {
+                const date = text.split(' ')[1];
+                if (!date) return sock.sendMessage(jid, { text: "Usage: report YYYYMMDD" });
 
-                const fileName = `${match[1]}.png`;
                 const res = await drive.files.list({
-                    q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
-                    fields: 'files(id,name)'
+                    q: `name='${date}.png' and trashed=false`,
+                    fields: 'files(id, name)'
                 });
 
-                if (!res.data.files.length) {
-                    return await sock.sendMessage(sender, { text: `❌ فائل ${fileName} نہیں ملی۔` });
+                if (res.data.files.length > 0) {
+                    const fileId = res.data.files[0].id;
+                    const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+                    await sock.sendMessage(jid, { image: { url }, caption: `Report for ${date}` });
+                } else {
+                    await sock.sendMessage(jid, { text: "File not found." });
                 }
-
-                const fileId = res.data.files[0].id;
-                const imageUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-                await sock.sendMessage(sender, { 
-                    image: { url: imageUrl }, 
-                    caption: `📄 Surgery Report\n🗓 Date: ${match[1]}` 
-                });
                 return;
             }
 
-            // --- GEMINI AI LOGIC ---
+            // AI Logic
             const now = Date.now();
-            if (now - lastGeminiCall < GEMINI_COOLDOWN_MS) return;
-
-            lastGeminiCall = now;
-            const result = await model.generateContent(text);
-            const responseText = result.response.text();
-            
-            await sock.sendMessage(sender, { text: responseText });
-
-        } catch (err) {
-            console.error('Processing Error:', err.message);
-            lastGeminiCall = 0;
-        }
+            if (now - lastGeminiCall > GEMINI_COOLDOWN_MS) {
+                lastGeminiCall = now;
+                const aiResult = await model.generateContent(text);
+                await sock.sendMessage(jid, { text: aiResult.response.text() });
+            }
+        } catch (err) { console.error("Msg Error:", err); }
     });
 }
 
-/* ================= RUN ================= */
-startBot().catch(err => console.error("Critical Startup Error:", err));
+startBot();
