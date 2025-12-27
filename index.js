@@ -1,3 +1,4 @@
+const fs = require('fs');
 const express = require('express');
 const { 
     default: makeWASocket, 
@@ -9,110 +10,80 @@ const {
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
-const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-/* ================= CONFIG ================= */
+// --- AUTO-CLEANUP (Fixes 405 error without Shell) ---
+// This deletes the session if it's corrupted, so a new QR generates
+const SESSION_PATH = './auth_info';
+function clearSession() {
+    if (fs.existsSync(SESSION_PATH)) {
+        fs.rmSync(SESSION_PATH, { recursive: true, force: true });
+        console.log("🧹 Old session cleared to fix connection...");
+    }
+}
+
+/* ================= KEEP-ALIVE ================= */
 const app = express();
-const PORT = process.env.PORT || 3000;
-const GEMINI_COOLDOWN_MS = 5000;
-let lastGeminiCall = 0;
+app.get('/', (req, res) => res.send('Bot is running! ✅'));
+app.listen(process.env.PORT || 3000);
 
-app.get('/', (req, res) => res.send('Bot Status: Active ✅'));
-app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
-
-/* ================= SETUP ================= */
+/* ================= START BOT ================= */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-let drive;
-try {
-    const driveAuth = new google.auth.GoogleAuth({
-        credentials: JSON.parse(process.env.GOOGLE_DRIVE_KEY),
-        scopes: ['https://www.googleapis.com/auth/drive.readonly']
-    });
-    drive = google.drive({ version: 'v3', auth: driveAuth });
-} catch (e) { console.error("Check GOOGLE_DRIVE_KEY in Secrets"); }
-
-/* ================= BOT LOGIC ================= */
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
     
-    // Fetch latest WA version to prevent 405 error
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`📡 Using WhatsApp Version: ${version.join('.')}`);
+    // Fallback WA version to bypass "405 Method Not Allowed"
+    const waVersion = [2, 3000, 1015901307];
 
     const sock = makeWASocket({
-        version,
+        version: waVersion,
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
-        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        generateHighQualityLinkPreview: true,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
             console.clear();
-            console.log('✨ NEW QR CODE GENERATED:');
+            console.log('📸 SCAN THIS QR CODE:');
             qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'close') {
-            const code = lastDisconnect?.error?.output?.statusCode;
-            console.log(`❌ Connection Closed: ${code}`);
-            if (code !== DisconnectReason.loggedOut) {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ Closed: ${statusCode}`);
+
+            // If it's a 405 or bad session, we clear and restart
+            if (statusCode === 405 || statusCode === 401) {
+                clearSession();
+                setTimeout(() => startBot(), 2000);
+            } else if (statusCode !== DisconnectReason.loggedOut) {
                 setTimeout(() => startBot(), 5000);
             }
         }
 
-        if (connection === 'open') console.log('✅ Connected Successfully!');
+        if (connection === 'open') console.log('✅ Connected!');
     });
 
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
+    sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message || msg.key.fromMe) return;
-
         const jid = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        
+
         try {
-            // Report logic (Example: report 20251227)
-            if (text.toLowerCase().startsWith('report')) {
-                const date = text.split(' ')[1];
-                if (!date) return sock.sendMessage(jid, { text: "Usage: report YYYYMMDD" });
-
-                const res = await drive.files.list({
-                    q: `name='${date}.png' and trashed=false`,
-                    fields: 'files(id, name)'
-                });
-
-                if (res.data.files.length > 0) {
-                    const fileId = res.data.files[0].id;
-                    const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
-                    await sock.sendMessage(jid, { image: { url }, caption: `Report for ${date}` });
-                } else {
-                    await sock.sendMessage(jid, { text: "File not found." });
-                }
-                return;
-            }
-
-            // AI Logic
-            const now = Date.now();
-            if (now - lastGeminiCall > GEMINI_COOLDOWN_MS) {
-                lastGeminiCall = now;
-                const aiResult = await model.generateContent(text);
-                await sock.sendMessage(jid, { text: aiResult.response.text() });
-            }
-        } catch (err) { console.error("Msg Error:", err); }
+            const result = await model.generateContent(text);
+            await sock.sendMessage(jid, { text: result.response.text() });
+        } catch (e) { console.error("AI Error:", e.message); }
     });
 }
 
