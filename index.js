@@ -88,3 +88,4 @@ async function startBot() {
 }
 
 startBot();
+require('./uptime.js');
