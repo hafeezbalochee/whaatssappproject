@@ -23,20 +23,6 @@ app.listen(PORT, () => {
   console.log(`🌐 Keep-alive server running on port ${PORT}`);
 });
 
-/* ================= SELF PING ================= */
-// Set this in Replit Secrets:
-// REPLIT_APP_URL = https://whaatssappproject--hafeezbalochee.replit.app
-
-setInterval(async () => {
-  try {
-    const res = await fetch(process.env.REPLIT_APP_URL);
-    console.log('Self-ping OK:', res.status);
-  } catch (err) {
-    console.error('Self-ping failed:', err.message);
-  }
-}, 4 * 60 * 1000);
-
-
 /* ================= GOOGLE DRIVE SETUP ================= */
 const driveAuth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_DRIVE_KEY),
