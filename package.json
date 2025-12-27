@@ -7,7 +7,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
-    "@google/generative-ai": "latest",
+    "@google/generative-ai": ,"^0.17.0",
     "googleapis": "latest",
     "express": "latest",
     "pino": "latest",
