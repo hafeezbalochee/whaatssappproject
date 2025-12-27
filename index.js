@@ -44,15 +44,12 @@ async function startBot() {
 
     // 2. Initialize Socket with 405 Fix
     const sock = makeWASocket({
-        // MANUAL VERSION OVERRIDE: Essential fix for "405 Method Not Allowed" in late 2025
-        version: [2, 3000, 1015901307], 
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-        },
-        logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'), // More stable than 'Chrome' on servers
-        printQRInTerminal: true
+    version: [2, 3000, 1015901307], // Manual stable version fix for 405 errors
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    browser: Browsers.macOS('Desktop'), // More stable for server environments
+    printQRInTerminal: true
+});
     });
 
     sock.ev.on('creds.update', saveCreds);
