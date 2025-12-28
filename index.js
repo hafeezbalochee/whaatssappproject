@@ -1,8 +1,8 @@
 const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  Browsers
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    Browsers
 } = require('@whiskeysockets/baileys');
 
 const pino = require('pino');
@@ -10,195 +10,184 @@ const qrcode = require('qrcode-terminal');
 const express = require('express');
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const fs = require('fs');
 
-// ===============================
-// 1️⃣ Express Health Check (Railway)
-// ===============================
+/* ================= GEMINI COOLDOWN ================= */
+let lastGeminiCall = 0;
+const GEMINI_COOLDOWN_MS = 5000;
+
+/* ================= KEEP ALIVE SERVER ================= */
 const app = express();
-app.get('/', (req, res) => res.send('WhatsApp AI Bot is Running 🚀'));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server is live on port ${PORT}`);
+app.get('/', (req, res) => res.send('Bot Alive! 🔥'));
+app.listen(process.env.PORT || 3000, () => {
+    console.log('🌐 Keep-alive server running');
 });
 
-// ===============================
-// 2️⃣ Google Drive Setup
-// ===============================
+/* ================= GOOGLE DRIVE ================= */
+const driveAuth = new google.auth.GoogleAuth({
+    credentials: JSON.parse(process.env.GOOGLE_DRIVE_KEY),
+    scopes: ['https://www.googleapis.com/auth/drive.readonly']
+});
+
+const drive = google.drive({ version: 'v3', auth: driveAuth });
 const FOLDER_ID = '1akYbGT5KZYe25hqTmy6nay1x77iozXZR';
 
-const driveAuth = new google.auth.GoogleAuth({
-  credentials: process.env.GOOGLE_DRIVE_KEY
-    ? JSON.parse(process.env.GOOGLE_DRIVE_KEY)
-    : undefined,
-  scopes: ['https://www.googleapis.com/auth/drive.readonly']
-});
+/* ================= GEMINI AI ================= */
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-const drive = google.drive({
-  version: 'v3',
-  auth: driveAuth
-});
-
-// ===============================
-// 3️⃣ Gemini AI Setup
-// ===============================
-if (!process.env.GEMINI_API_KEY) {
-  console.warn('⚠️ GEMINI_API_KEY not set');
-}
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
-let lastGeminiCall = 0;
-const COOLDOWN = 6000;
-
-// ===============================
-// 4️⃣ WhatsApp Bot
-// ===============================
+/* ================= START BOT ================= */
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
-  const sock = makeWASocket({
-    auth: {
-      creds: state.creds,
-      keys: state.keys
-    },
-    logger: pino({ level: 'silent' }),
-    browser: Browsers.macOS('Chrome'),
-    printQRInTerminal: true
-  });
+    const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.macOS('Chrome')
+    });
 
-  sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    /* ===== CONNECTION ===== */
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
-      console.log('📱 Scan this QR code');
-      qrcode.generate(qr, { small: true });
-    }
+        if (qr) qrcode.generate(qr, { small: true });
 
-    if (connection === 'open') {
-      console.log('✅ Connected to WhatsApp');
-    }
+        if (connection === 'close') {
+            const shouldReconnect =
+                lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
 
-    if (connection === 'close') {
-      const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`❌ Connection closed. Reason: ${code}`);
-
-      if (code !== DisconnectReason.loggedOut) {
-        console.log('🔄 Reconnecting in 10 seconds...');
-        setTimeout(startBot, 10000);
-      }
-    }
-  });
-
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg?.message || msg.key.fromMe) return;
-
-    const jid = msg.key.remoteJid;
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      '';
-
-    const lower = text.toLowerCase().trim();
-
-    try {
-      // ===============================
-      // 📄 Daily Report
-      // ===============================
-      if (lower.startsWith('report')) {
-        const match = lower.match(/report\s+(\d+)/);
-        if (!match) {
-          await sock.sendMessage(jid, { text: 'Usage: report 27122025' });
-          return;
+            if (shouldReconnect) {
+                console.log('🔁 Reconnecting...');
+                startBot();
+            }
         }
 
-        const fileName = `${match[1]}.png`;
-
-        const res = await drive.files.list({
-          q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
-          fields: 'files(id)'
-        });
-
-        if (!res.data.files.length) {
-          await sock.sendMessage(jid, { text: 'Report not found' });
-          return;
+        if (connection === 'open') {
+            console.log('✅ WhatsApp Connected');
         }
+    });
 
-        const imageUrl = `https://drive.google.com/uc?export=download&id=${res.data.files[0].id}`;
-        await sock.sendMessage(jid, {
-          image: { url: imageUrl },
-          caption: `Report: ${match[1]}`
-        });
-        return;
-      }
+    /* ===== MESSAGES ===== */
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
 
-      // ===============================
-      // 📊 Monthly Report
-      // ===============================
-      if (lower.startsWith('monthly report')) {
-        const match = lower.match(/monthly report\s+([a-zA-Z]+)\s+(\d{4})/);
-        if (!match) {
-          await sock.sendMessage(jid, {
-            text: 'Usage: monthly report October 2025'
-          });
-          return;
+        const msg = messages[0];
+        if (!msg || msg.key.fromMe) return;
+
+        const sender = msg.key.remoteJid;
+        const text =
+            msg.message?.conversation ||
+            msg.message?.extendedTextMessage?.text ||
+            '';
+
+        const lower = text.toLowerCase().trim();
+
+        try {
+            /* ===== DAILY REPORT ===== */
+            if (lower.startsWith('report')) {
+                const match = lower.match(/report\s+(\d{8})/);
+
+                if (!match) {
+                    await sock.sendMessage(sender, {
+                        text: '📄 استعمال کریں:\nreport 23122025'
+                    });
+                    return;
+                }
+
+                const fileName = `${match[1]}.png`;
+
+                const res = await drive.files.list({
+                    q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
+                    fields: 'files(id,name)'
+                });
+
+                if (!res.data.files.length) {
+                    await sock.sendMessage(sender, {
+                        text: `❌ ${fileName} موجود نہیں ہے۔`
+                    });
+                    return;
+                }
+
+                const fileId = res.data.files[0].id;
+                const imageUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+                await sock.sendMessage(sender, {
+                    image: { url: imageUrl },
+                    caption: `📄 Surgery Report\n🗓 ${match[1]}`
+                });
+                return;
+            }
+
+            /* ===== MONTHLY REPORT ===== */
+            if (lower.startsWith('monthly report')) {
+                const match = lower.match(
+                    /monthly report\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/
+                );
+
+                if (!match) {
+                    await sock.sendMessage(sender, {
+                        text: '📊 استعمال کریں:\nmonthly report november 2025'
+                    });
+                    return;
+                }
+
+                const fileName = `Monthly_Report_\( {month}_ \){year}.xlsx`.toLowerCase();
+const res = await drive.files.list({
+  q: `'\( {FOLDER_ID}' in parents and name contains ' \){fileName}' and trashed=false`,
+  fields: 'files(id,name)'
+
+                });
+
+                if (!res.data.files.length) {
+                    await sock.sendMessage(sender, {
+                        text: `❌ ${fileName} موجود نہیں ہے۔`
+                    });
+                    return;
+                }
+
+                const fileId = res.data.files[0].id;
+                const fileUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+                await sock.sendMessage(sender, {
+                    document: { url: fileUrl },
+                    mimetype:
+                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    fileName,
+                    caption: `📊 Monthly Report\n${match[1].toUpperCase()} ${match[2]}`
+                });
+                return;
+            }
+
+            /* ===== GEMINI AI ===== */
+            const now = Date.now();
+            if (now - lastGeminiCall < GEMINI_COOLDOWN_MS) {
+                await sock.sendMessage(sender, {
+                    text: '⏳ AI تھوڑی دیر بعد دستیاب ہو گا۔'
+                });
+                return;
+            }
+
+            lastGeminiCall = now;
+
+            const result = await model.generateContent(text);
+            const reply = result.response.text();
+
+            await sock.sendMessage(sender, { text: reply });
+
+        } catch (err) {
+            console.error('Message error:', err);
+            lastGeminiCall = 0;
+
+            await sock.sendMessage(sender, {
+                text: '❌ کوئی خرابی پیش آ گئی ہے۔'
+            });
         }
-
-        const month =
-          match[1].charAt(0).toUpperCase() +
-          match[1].slice(1).toLowerCase();
-        const year = match[2];
-        const fileName = `Monthly_Report_${month}_${year}.xlsx`;
-
-        const res = await drive.files.list({
-          q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
-          fields: 'files(id)'
-        });
-
-        if (!res.data.files.length) {
-          await sock.sendMessage(jid, {
-            text: `Monthly report (${month} ${year}) not found`
-          });
-          return;
-        }
-
-        const fileUrl = `https://drive.google.com/uc?export=download&id=${res.data.files[0].id}`;
-
-        await sock.sendMessage(jid, {
-          document: { url: fileUrl },
-          fileName,
-          mimetype:
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        });
-        return;
-      }
-
-      // ===============================
-      // 🤖 Gemini AI Chat
-      // ===============================
-      if (Date.now() - lastGeminiCall < COOLDOWN) return;
-      lastGeminiCall = Date.now();
-
-      const result = await model.generateContent(text);
-      const reply = result.response.text();
-
-      await sock.sendMessage(jid, { text: reply });
-
-    } catch (err) {
-      console.error('Bot Error:', err);
-    }
-  });
+    });
 }
 
-// ===============================
-// 5️⃣ Start Bot
-// ===============================
-startBot().catch((err) => {
-  console.error('Startup Error:', err);
-});
+/* ================= RUN ================= */
+startBot();
 
+
+pm2 restart whatsapp-bot
