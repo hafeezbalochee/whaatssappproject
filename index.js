@@ -188,3 +188,6 @@ const res = await drive.files.list({
 
 /* ================= RUN ================= */
 startBot();
+
+
+pm2 restart whatsapp-bot
