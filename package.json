@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
+    "@whiskeysockets/baileys": "6.7.9",
     "@google/generative-ai": "^0.21.0",
     "googleapis": "^134.0.0",
     "express": "^4.19.2",
