@@ -14,8 +14,10 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // --- 1. Health Check Server for Railway ---
 const app = express();
 app.get('/', (req, res) => res.send('WhatsApp AI Bot is Running! 🚀'));
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+const port = process.env.PORT || 3000;
+app.listen(port, "0.0.0.0", () => {
+  console.log(`✅ Server is live on port ${port}`);
+});
 
 // --- 2. Configuration & API Setup ---
 // The Folder ID from your Google Drive
