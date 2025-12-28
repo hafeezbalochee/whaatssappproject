@@ -12,5 +12,6 @@
     "express": "^4.19.2",
     "pino": "^9.4.0",
     "qrcode-terminal": "^0.12.0"
+    "node-fetch": "^3.3.2"
   }
 }
