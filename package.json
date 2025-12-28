@@ -1,6 +1,7 @@
 {
-  "name": "whatsapp-bot",
-  "version": "1.0.0",
+  "name": "whatsapp-ai-bot",
+  "version": "1.1.0",
+  "description": "WhatsApp bot with Gemini AI and Google Drive integration",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -12,6 +13,9 @@
     "express": "^4.19.2",
     "pino": "^9.4.0",
     "qrcode-terminal": "^0.12.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
