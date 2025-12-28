@@ -1,20 +1,31 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    Browsers, 
+    fetchLatestBaileysVersion 
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// --- 1. Express Server Setup for Railway ---
 const app = express();
-app.get('/', (req, res) => res.send('Bot Live! 🔥'));
-app.listen(process.env.PORT || 3000, () => console.log('Server running'));
+app.get('/', (req, res) => res.send('Bot is online and running! 🚀'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Health check server running on port ${PORT}`));
+
+// --- 2. External API Configurations ---
+// Fixed FOLDER_ID: Removed curly braces which cause API errors
+const FOLDER_ID = '1akYbGT5KZYe25hqTmy6nay1x77iozXZR';
 
 const driveAuth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_DRIVE_KEY || '{}'),
   scopes: ['https://www.googleapis.com/auth/drive.readonly']
 });
 const drive = google.drive({ version: 'v3', auth: driveAuth });
-const FOLDER_ID = '1akYbGT5KZYe25hqTmy6nay1x77iozXZR';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
@@ -22,10 +33,16 @@ const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 let lastGeminiCall = 0;
 const COOLDOWN = 6000;
 
+// --- 3. Main Bot Logic ---
 async function startBot() {
+  // Fix for 405 error: Always fetch and use the latest WhatsApp version
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`Connecting with WhatsApp v${version.join('.')} (Latest: ${isLatest})`);
+
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
   const sock = makeWASocket({
+    version, // Crucial: This prevents the 405 Method Not Allowed error
     auth: state,
     logger: pino({ level: 'silent' }),
     browser: Browsers.macOS('Chrome'),
@@ -33,37 +50,28 @@ async function startBot() {
   });
 
   sock.ev.on('creds.update', saveCreds);
-   // connection.update section replace کر دو یہ سے
 
-sock.ev.on('connection.update', (update) => {
-  const { connection, lastDisconnect, qr } = update;
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    
+    if (qr) qrcode.generate(qr, { small: true });
 
-  if (qr) {
-    qrcode.generate(qr, { small: true });
-    console.log('QR آ گئی – فوراً scan کر لو!');
-  }
-
-  if (connection === 'close') {
-    const statusCode = lastDisconnect?.error?.output?.statusCode;
-    console.log('Connection closed! Code:', statusCode);
-
-    if (statusCode === DisconnectReason.loggedOut) {
-      console.log('Logged out – نیا QR کے لیے auth_info delete کر کے redeploy');
-      return;
+    if (connection === 'open') {
+      console.log('✅ WhatsApp Bot Connected Successfully!');
     }
 
-    if (statusCode === 405) {
-      console.log('WhatsApp نے block کر دیا (405) – نیا number استعمال کر لو یا 24 گھنٹے انتظار');
-      return; // reconnect نہ کریں – loop ختم
-    }
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      const errorCode = lastDisconnect?.error?.output?.statusCode;
 
-    // دیگر errors پر ایک بار try
-    console.log('Reconnecting in 15 seconds...');
-    setTimeout(startBot, 15000);
-  }
-
-  if (connection === 'open') {
-    console.log('✅ Bot Connected Successfully!')
+      if (errorCode === 405) {
+        console.log('⚠️ Status 405 detected: WhatsApp has flagged this session. Waiting 1 hour before retry.');
+        // Stop the loop for an hour to avoid a permanent ban
+        setTimeout(startBot, 3600000); 
+      } else if (shouldReconnect) {
+        console.log('🔄 Connection lost. Reconnecting in 10 seconds...');
+        setTimeout(startBot, 10000);
+      }
     }
   });
 
@@ -76,13 +84,14 @@ sock.ev.on('connection.update', (update) => {
     const lower = text.toLowerCase().trim();
 
     try {
+      // 📊 Report Command
       if (lower.startsWith('report')) {
-        const match = lower.match(/report\s+(\d{8})/);
+        const match = lower.match(/report\s+(\d+)/);
         if (!match) return sock.sendMessage(sender, { text: 'استعمال: report 27122025' });
 
         const fileName = `${match[1]}.png`;
         const res = await drive.files.list({
-          q: `'\( {FOLDER_ID}' in parents and name=' \){fileName}' and trashed=false`,
+          q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
           fields: 'files(id)'
         });
 
@@ -93,36 +102,40 @@ sock.ev.on('connection.update', (update) => {
         return;
       }
 
+      // 📅 Monthly Report Command
       if (lower.startsWith('monthly report')) {
-        const match = lower.match(/monthly report\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/i);
+        const match = lower.match(/monthly report\s+([a-zA-Z]+)\s+(\d{4})/i);
         if (!match) return sock.sendMessage(sender, { text: 'استعمال: monthly report october 2025' });
 
-        const month = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+        const month = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
         const year = match[2];
-        const fileName = `Monthly_Report_\( {month}_ \){year}.xlsx`;
+        const fileName = `Monthly_Report_${month}_${year}.xlsx`;
 
         const res = await drive.files.list({
-          q: `'\( {FOLDER_ID}' in parents and name=' \){fileName}' and trashed=false`,
+          q: `'${FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
           fields: 'files(id)'
         });
 
-        if (!res.data.files?.length) return sock.sendMessage(sender, { text: 'Monthly report موجود نہیں' });
+        if (!res.data.files?.length) return sock.sendMessage(sender, { text: `Monthly report (${month} ${year}) موجود نہیں` });
 
         const fileUrl = `https://drive.google.com/uc?export=download&id=${res.data.files[0].id}`;
-        await sock.sendMessage(sender, { document: { url: fileUrl }, fileName });
+        await sock.sendMessage(sender, { document: { url: fileUrl }, fileName: fileName, mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         return;
       }
 
-      if (Date.now() - lastGeminiCall < COOLDOWN) return;
+      // 🤖 Gemini AI Response
+      if (Date.now() - lastGeminiCall < COOLDOWN) return; // Silent cooldown
       lastGeminiCall = Date.now();
 
       const result = await model.generateContent(text);
-      await sock.sendMessage(sender, { text: result.response.text() });
+      const reply = result.response.text();
+      await sock.sendMessage(sender, { text: reply });
 
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Execution Error:', err);
     }
   });
 }
 
+// Start the bot
 startBot();
