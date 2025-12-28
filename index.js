@@ -33,15 +33,37 @@ async function startBot() {
   });
 
   sock.ev.on('creds.update', saveCreds);
+   // connection.update section replace کر دو یہ سے
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    if (qr) qrcode.generate(qr, { small: true });
-    if (connection === 'open') console.log('✅ Connected!');
-    if (connection === 'close') {
-      const code = lastDisconnect?.error?.output?.statusCode;
-      if (code !== DisconnectReason.loggedOut && code !== 405) {
-        setTimeout(startBot, 10000);
+sock.ev.on('connection.update', (update) => {
+  const { connection, lastDisconnect, qr } = update;
+
+  if (qr) {
+    qrcode.generate(qr, { small: true });
+    console.log('QR آ گئی – فوراً scan کر لو!');
+  }
+
+  if (connection === 'close') {
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+    console.log('Connection closed! Code:', statusCode);
+
+    if (statusCode === DisconnectReason.loggedOut) {
+      console.log('Logged out – نیا QR کے لیے auth_info delete کر کے redeploy');
+      return;
+    }
+
+    if (statusCode === 405) {
+      console.log('WhatsApp نے block کر دیا (405) – نیا number استعمال کر لو یا 24 گھنٹے انتظار');
+      return; // reconnect نہ کریں – loop ختم
+    }
+
+    // دیگر errors پر ایک بار try
+    console.log('Reconnecting in 15 seconds...');
+    setTimeout(startBot, 15000);
+  }
+
+  if (connection === 'open') {
+    console.log('✅ Bot Connected Successfully!')
       }
     }
   });
