@@ -7,7 +7,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const pino = require('pino');
-const QRCode = require('qrcode');
+const QRCode = require('qrcode-terminal');
 const express = require('express');
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
