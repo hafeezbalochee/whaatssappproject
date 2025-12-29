@@ -31,15 +31,17 @@ app.get('/qr', async (req, res) => {
     return res.send('QR not generated yet. Wait...');
   }
 
-  const qrImage = await QRCode.toDataURL(latestQR, {
-    width: 400,
-    margin: 2
-  });
-
-  res.send(`
-    <h2>Scan QR Code</h2>
-    <img src="${qrImage}" />
-  `);
+  app.get('/qr', (req, res) => {
+  if (latestQR) {
+    res.type('html');
+    res.send(`
+      <h2>Scan this QR to connect WhatsApp Bot</h2>
+      <pre>${latestQR}</pre>
+      <p>Copy the above text QR and scan in WhatsApp</p>
+    `);
+  } else {
+    res.send('QR not ready yet. Wait a few seconds and refresh.');
+  }
 });
 
 const PORT = process.env.PORT || 3000;
